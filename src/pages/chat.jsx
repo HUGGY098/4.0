@@ -13,24 +13,38 @@ const SUGGESTIONS = [
 
 export default function Chat() {
   const [messages, setMessages] = useState([]);
-  const [newChat, setNewChat] = useState(false);
+  const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const scrollRef = useRef(null);
 
-  const loadMessages = async () => {
+  const createConversation = async () => {
+    const { data, error } = await supabase
+      .from("conversations")
+      .insert({ title: "New Chat" })
+      .select()
+      .single();
+
+    if (!error) {
+      setConversationId(data.id);
+      setMessages([]);
+    }
+  };
+
+  const loadMessages = async (id) => {
     const { data, error } = await supabase
       .from("messages")
       .select("*")
+      .eq("conversation_id", id)
       .order("created_at", { ascending: true });
 
-    if (!error && !newChat) {
+    if (!error) {
       setMessages(data || []);
     }
   };
 
   useEffect(() => {
-    loadMessages();
+    createConversation();
   }, []);
 
   useEffect(() => {
@@ -39,10 +53,14 @@ export default function Chat() {
     });
   }, [messages]);
 
+  const newChat = () => {
+    createConversation();
+  };
+
   const send = async (text) => {
     const content = (text ?? input).trim();
 
-    if (!content || sending) return;
+    if (!content || sending || !conversationId) return;
 
     setInput("");
     setSending(true);
@@ -50,10 +68,10 @@ export default function Chat() {
     await supabase.from("messages").insert({
       role: "user",
       content,
+      conversation_id: conversationId,
     });
 
-    await loadMessages();
-    setNewChat(false);
+    await loadMessages(conversationId);
 
     setSending(false);
   };
@@ -72,10 +90,7 @@ export default function Chat() {
         </p>
 
         <button
-          onClick={() => {
-            setMessages([]);
-            setNewChat(true);
-          }}
+          onClick={newChat}
           className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent"
         >
           + New Chat
