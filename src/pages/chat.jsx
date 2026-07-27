@@ -81,15 +81,6 @@ export default function Chat() {
           + New Chat
         </button>
 
-        <button
-          onClick={() => {
-            setMessages([]);
-            setNewChat(true);
-          }}
-          className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent"
-        >
-          + New Chat
-        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 md:px-10">
