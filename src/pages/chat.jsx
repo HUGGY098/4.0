@@ -1,5 +1,4 @@
-import React from "react";
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Sparkles, Loader2 } from "lucide-react";
 import MessageBubble from "../components/Chat/MessageBubble";
 import { supabase } from "../lib/supabase";
@@ -16,6 +15,7 @@ export default function Chat() {
   const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
   const scrollRef = useRef(null);
 
   const createConversation = async () => {
@@ -25,10 +25,15 @@ export default function Chat() {
       .select()
       .single();
 
-    if (!error) {
-      setConversationId(data.id);
-      setMessages([]);
+    if (error) {
+      console.error("Conversation error:", error);
+      setError("Couldn't create a chat.");
+      return;
     }
+
+    setConversationId(data.id);
+    setMessages([]);
+    setError("");
   };
 
   const loadMessages = async (id) => {
@@ -38,9 +43,12 @@ export default function Chat() {
       .eq("conversation_id", id)
       .order("created_at", { ascending: true });
 
-    if (!error) {
-      setMessages(data || []);
+    if (error) {
+      console.error("Message loading error:", error);
+      return;
     }
+
+    setMessages(data || []);
   };
 
   useEffect(() => {
@@ -51,7 +59,7 @@ export default function Chat() {
     scrollRef.current?.scrollIntoView({
       behavior: "smooth",
     });
-  }, [messages]);
+  }, [messages, sending]);
 
   const newChat = () => {
     createConversation();
@@ -64,16 +72,71 @@ export default function Chat() {
 
     setInput("");
     setSending(true);
+    setError("");
 
-    await supabase.from("messages").insert({
-      role: "user",
-      content,
-      conversation_id: conversationId,
-    });
+    try {
+      // Save user's message
+      const { error: userMessageError } = await supabase
+        .from("messages")
+        .insert({
+          role: "user",
+          content,
+          conversation_id: conversationId,
+        });
 
-    await loadMessages(conversationId);
+      if (userMessageError) {
+        throw userMessageError;
+      }
 
-    setSending(false);
+      // Get the conversation history
+      const { data: history, error: historyError } = await supabase
+        .from("messages")
+        .select("role, content")
+        .eq("conversation_id", conversationId)
+        .order("created_at", { ascending: true });
+
+      if (historyError) {
+        throw historyError;
+      }
+
+      // Ask Groq for an answer
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: history || [],
+        }),
+      });
+
+      const result = await response.json();
+
+      if (!response.ok) {
+        throw new Error(result.error || "AI request failed.");
+      }
+
+      // Save AI response
+      const { error: aiMessageError } = await supabase
+        .from("messages")
+        .insert({
+          role: "assistant",
+          content: result.content,
+          conversation_id: conversationId,
+        });
+
+      if (aiMessageError) {
+        throw aiMessageError;
+      }
+
+      await loadMessages(conversationId);
+    } catch (err) {
+      console.error("Chat error:", err);
+      setError(err.message || "Something went wrong.");
+      await loadMessages(conversationId);
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -95,13 +158,18 @@ export default function Chat() {
         >
           + New Chat
         </button>
-
       </div>
 
       <div className="flex-1 overflow-y-auto px-5 md:px-10">
         <div className="max-w-3xl mx-auto space-y-5">
 
-          {messages.length === 0 && (
+          {error && (
+            <div className="rounded-xl border p-3 text-sm text-destructive">
+              {error}
+            </div>
+          )}
+
+          {messages.length === 0 && !error && (
             <div className="py-10 text-center">
 
               <Sparkles className="size-8 mx-auto mb-4" />
@@ -119,7 +187,7 @@ export default function Chat() {
                   <button
                     key={s}
                     onClick={() => send(s)}
-                    className="rounded-xl border p-3 text-sm text-left"
+                    className="rounded-xl border p-3 text-sm text-left hover:bg-accent"
                   >
                     {s}
                   </button>
@@ -137,19 +205,17 @@ export default function Chat() {
           ))}
 
           {sending && (
-            <div className="flex gap-2 text-sm">
+            <div className="flex gap-2 text-sm items-center">
               <Loader2 className="animate-spin size-4" />
               4.0 is thinking...
             </div>
           )}
 
           <div ref={scrollRef} />
-
         </div>
       </div>
 
       <div className="border-t px-5 py-4">
-
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -157,23 +223,22 @@ export default function Chat() {
           }}
           className="max-w-3xl mx-auto flex gap-2"
         >
-
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             className="flex-1 rounded-xl border px-4 py-3"
             placeholder="Message 4.0..."
+            rows={1}
           />
 
           <button
+            type="submit"
             disabled={!input.trim() || sending}
-            className="px-4 rounded-xl border"
+            className="px-4 rounded-xl border disabled:opacity-50"
           >
             Send
           </button>
-
         </form>
-
       </div>
 
     </div>

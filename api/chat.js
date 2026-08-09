@@ -12,18 +12,40 @@ export default async function handler(req, res) {
   try {
     const { messages } = req.body;
 
+    if (!Array.isArray(messages)) {
+      return res.status(400).json({
+        error: "Messages are required.",
+      });
+    }
+
     const completion = await groq.chat.completions.create({
-      messages,
       model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are 4.0, an academic co-pilot. Give helpful, clear, concise answers. Help the student plan schoolwork, understand assignments, manage time, and make good academic decisions.",
+        },
+        ...messages,
+      ],
     });
 
-    res.status(200).json({
-      reply: completion.choices[0].message.content,
+    const content = completion.choices?.[0]?.message?.content;
+
+    if (!content) {
+      return res.status(500).json({
+        error: "Groq returned no response.",
+      });
+    }
+
+    return res.status(200).json({
+      content,
     });
   } catch (error) {
-    console.error(error);
-    res.status(500).json({
-      error: error.message,
+    console.error("Groq error:", error);
+
+    return res.status(500).json({
+      error: error.message || "Groq request failed.",
     });
   }
 }

@@ -22,7 +22,7 @@ export default function Memory() {
       setMemories(data || []);
     } catch (error) {
       console.error("Memory loading error:", error);
-    } finally {
+    } finally {r
       setLoading(false);
     }
   };
