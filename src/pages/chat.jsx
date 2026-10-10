@@ -6,7 +6,7 @@ import { supabase } from "../lib/supabase";
 const SUGGESTIONS = [
   "What should I focus on tonight?",
   "I'm really busy today — what can wait?",
-  "Add a study session for calculus tomorrow at 8pm",
+  "What assignments and deadlines are coming up?",
   "What do you remember about my study habits?",
 ];
 
@@ -65,6 +65,53 @@ export default function Chat() {
     createConversation();
   };
 
+  const getScheduleContext = async () => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .order("start_time", { ascending: true })
+      .limit(200);
+
+    if (error) {
+      console.error("Schedule context error:", error);
+      throw new Error(
+        "I couldn't load your schedule, so I can't make a reliable plan yet. Please refresh and try again."
+      );
+    }
+
+    const now = new Date();
+    const cutoff = new Date(now);
+    cutoff.setDate(cutoff.getDate() - 7);
+
+    const events = (data || [])
+      .filter((event) => {
+        const dateValue = event.start_time || event.due_time;
+
+        // Keep undated events too, so the AI can still see them.
+        if (!dateValue) return true;
+
+        const date = new Date(dateValue);
+
+        // Include recent past events for context and future events.
+        return !Number.isNaN(date.getTime()) && date >= cutoff;
+      })
+      .map((event) => ({
+        title: event.title || "Untitled event",
+        type: event.type || "personal",
+        start_time: event.start_time || null,
+        due_time: event.due_time || null,
+        end_time: event.end_time || null,
+        importance_score: event.importance_score ?? null,
+        description: event.description || null,
+      }));
+
+    return {
+      current_time: now.toISOString(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      events,
+    };
+  };
+
   const send = async (text) => {
     const content = (text ?? input).trim();
 
@@ -75,7 +122,6 @@ export default function Chat() {
     setError("");
 
     try {
-      // Save user's message
       const { error: userMessageError } = await supabase
         .from("messages")
         .insert({
@@ -84,22 +130,19 @@ export default function Chat() {
           conversation_id: conversationId,
         });
 
-      if (userMessageError) {
-        throw userMessageError;
-      }
+      if (userMessageError) throw userMessageError;
 
-      // Get the conversation history
       const { data: history, error: historyError } = await supabase
         .from("messages")
         .select("role, content")
         .eq("conversation_id", conversationId)
         .order("created_at", { ascending: true });
 
-      if (historyError) {
-        throw historyError;
-      }
+      if (historyError) throw historyError;
 
-      // Ask Groq for an answer
+      // Retrieve the user's actual imported and manually added events.
+      const scheduleContext = await getScheduleContext();
+
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
@@ -107,6 +150,7 @@ export default function Chat() {
         },
         body: JSON.stringify({
           messages: history || [],
+          scheduleContext,
         }),
       });
 
@@ -116,7 +160,6 @@ export default function Chat() {
         throw new Error(result.error || "AI request failed.");
       }
 
-      // Save AI response
       const { error: aiMessageError } = await supabase
         .from("messages")
         .insert({
@@ -125,9 +168,7 @@ export default function Chat() {
           conversation_id: conversationId,
         });
 
-      if (aiMessageError) {
-        throw aiMessageError;
-      }
+      if (aiMessageError) throw aiMessageError;
 
       await loadMessages(conversationId);
     } catch (err) {
@@ -141,7 +182,6 @@ export default function Chat() {
 
   return (
     <div className="flex flex-col h-screen max-h-screen">
-
       <div className="px-5 md:px-10 pt-8 pb-4">
         <h1 className="font-display text-2xl md:text-3xl font-semibold flex items-center gap-2">
           <Sparkles className="size-7" />
@@ -149,7 +189,7 @@ export default function Chat() {
         </h1>
 
         <p className="text-muted-foreground text-sm mt-2">
-          Ask anything. 4.0 uses your schedule and memory to help you plan.
+          Your academic co-pilot, powered by your actual schedule.
         </p>
 
         <button
@@ -162,7 +202,6 @@ export default function Chat() {
 
       <div className="flex-1 overflow-y-auto px-5 md:px-10">
         <div className="max-w-3xl mx-auto space-y-5">
-
           {error && (
             <div className="rounded-xl border p-3 text-sm text-destructive">
               {error}
@@ -171,7 +210,6 @@ export default function Chat() {
 
           {messages.length === 0 && !error && (
             <div className="py-10 text-center">
-
               <Sparkles className="size-8 mx-auto mb-4" />
 
               <h2 className="font-display text-lg font-semibold">
@@ -179,21 +217,20 @@ export default function Chat() {
               </h2>
 
               <p className="text-sm text-muted-foreground mt-2">
-                Your academic co-pilot. Try asking:
+                I'll use your saved schedule to help you decide what to do next.
               </p>
 
               <div className="grid sm:grid-cols-2 gap-3 mt-6">
-                {SUGGESTIONS.map((s) => (
+                {SUGGESTIONS.map((suggestion) => (
                   <button
-                    key={s}
-                    onClick={() => send(s)}
+                    key={suggestion}
+                    onClick={() => send(suggestion)}
                     className="rounded-xl border p-3 text-sm text-left hover:bg-accent"
                   >
-                    {s}
+                    {suggestion}
                   </button>
                 ))}
               </div>
-
             </div>
           )}
 
@@ -207,7 +244,7 @@ export default function Chat() {
           {sending && (
             <div className="flex gap-2 text-sm items-center">
               <Loader2 className="animate-spin size-4" />
-              4.0 is thinking...
+              4.0 is checking your schedule...
             </div>
           )}
 
@@ -217,15 +254,15 @@ export default function Chat() {
 
       <div className="border-t px-5 py-4">
         <form
-          onSubmit={(e) => {
-            e.preventDefault();
+          onSubmit={(event) => {
+            event.preventDefault();
             send();
           }}
           className="max-w-3xl mx-auto flex gap-2"
         >
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(event) => setInput(event.target.value)}
             className="flex-1 rounded-xl border px-4 py-3"
             placeholder="Message 4.0..."
             rows={1}
@@ -233,14 +270,13 @@ export default function Chat() {
 
           <button
             type="submit"
-            disabled={!input.trim() || sending}
+            disabled={!input.trim() || sending || !conversationId}
             className="px-4 rounded-xl border disabled:opacity-50"
           >
             Send
           </button>
         </form>
       </div>
-
     </div>
   );
 }
