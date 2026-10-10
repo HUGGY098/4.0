@@ -1,3 +1,4 @@
+
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return res.status(405).json({
@@ -14,13 +15,74 @@ export default async function handler(req, res) {
       });
     }
 
-    const { messages } = req.body || {};
+    const { messages, scheduleContext } = req.body || {};
 
     if (!Array.isArray(messages)) {
       return res.status(400).json({
         error: "Messages are required.",
       });
     }
+
+    // Give 4.0 the actual schedule provided by chat.jsx.
+    const schedule = scheduleContext || {};
+    const events = Array.isArray(schedule.events)
+      ? schedule.events
+      : [];
+
+    const currentTime =
+      schedule.current_time || new Date().toISOString();
+
+    const timezone =
+      schedule.timezone || "America/Chicago";
+
+    const scheduleText = JSON.stringify(
+      {
+        current_time: currentTime,
+        timezone,
+        events,
+      },
+      null,
+      2
+    );
+
+    const systemPrompt = `
+You are 4.0, a personalized academic co-pilot.
+
+YOUR MAIN JOB
+Help the student make specific, realistic decisions about their actual schoolwork, schedule, deadlines, and goals.
+
+REAL SCHEDULE DATA
+The student's schedule is provided below. Use this data when answering questions about what to do, what to prioritize, or how to plan their time.
+
+Current time: ${currentTime}
+Student's time zone: ${timezone}
+
+Schedule data:
+${scheduleText}
+
+IMPORTANT RULES
+1. Use the actual schedule data. Do not invent assignments, deadlines, classes, grades, events, or available time.
+2. When asked what to work on, identify specific assignments from the schedule whenever possible.
+3. Prioritize using due dates, importance, event type, and the time available before the next commitment. Explain briefly why your recommendation makes sense.
+4. Distinguish between an assignment's due date and its start time. An assignment can have a future due date even if its start time is in the past.
+5. Treat events in the past as past events. Do not recommend working on an expired assignment as if it were still upcoming unless the student says it is unfinished or needs to be made up.
+6. Consider the current time and time zone when interpreting dates. Do not assume the student has unlimited time.
+7. Personal events and classes are commitments, not automatically assignments to complete.
+8. If there are no relevant upcoming assignments, say so clearly. Explain what information is missing and ask the student to add assignments or connect their school calendar. Do not fill the gap with a generic productivity guide.
+9. If the schedule contains only test data or events that do not help answer the question, do not pretend they are real schoolwork.
+10. Ask a brief follow-up question if a key detail is missing. Do not overwhelm the student with a long questionnaire.
+11. Keep answers clear, direct, and student-friendly. Prefer a specific recommendation and a short explanation over long lists of general tips.
+12. Never claim that you checked Canvas, grades, or another source unless that information is actually provided.
+
+WHEN MAKING A PLAN
+- First identify the most important real task.
+- Then explain what the student should do next.
+- Account for known classes, events, and deadlines.
+- Only estimate task duration when there is enough information, and label estimates as estimates.
+- If there is insufficient schedule data, be honest rather than guessing.
+
+Your goal is to make decisions WITH the student using their actual data, not to give generic advice that could apply to anyone.
+`;
 
     const groqResponse = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -35,29 +97,37 @@ export default async function handler(req, res) {
           messages: [
             {
               role: "system",
-              content:
-                "You are 4.0, an academic co-pilot. Give helpful, clear, concise answers. Help the student plan schoolwork, understand assignments, manage time, and make good academic decisions.",
+              content: systemPrompt,
             },
             ...messages,
           ],
-          temperature: 0.7,
-          max_tokens: 1000,
+          temperature: 0.4,
+          max_tokens: 1200,
         }),
       }
     );
 
-    const text = await groqResponse.text();
+    const responseText = await groqResponse.text();
 
     let data;
+
     try {
-      data = JSON.parse(text);
+      data = JSON.parse(responseText);
     } catch {
+      console.error(
+        "Groq returned a non-JSON response:",
+        groqResponse.status,
+        responseText
+      );
+
       return res.status(500).json({
         error: `Groq returned a non-JSON response (${groqResponse.status}).`,
       });
     }
 
     if (!groqResponse.ok) {
+      console.error("Groq API error:", data);
+
       return res.status(groqResponse.status).json({
         error:
           data?.error?.message ||
@@ -75,7 +145,7 @@ export default async function handler(req, res) {
 
     return res.status(200).json({ content });
   } catch (error) {
-    console.error("Groq API error:", error);
+    console.error("4.0 chat API error:", error);
 
     return res.status(500).json({
       error: error?.message || "Unexpected server error.",
