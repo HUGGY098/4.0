@@ -142,6 +142,7 @@ export default function Chat() {
 
       // Retrieve the user's actual imported and manually added events.
       const scheduleContext = await getScheduleContext();
+      console.log("4.0 ACTUAL SCHEDULE DATA:", scheduleContext);
 
       const response = await fetch("/api/chat", {
         method: "POST",
