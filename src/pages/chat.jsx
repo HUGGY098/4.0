@@ -1,5 +1,12 @@
+
 import React, { useEffect, useRef, useState } from "react";
-import { Sparkles, Loader2 } from "lucide-react";
+import {
+  Sparkles,
+  Loader2,
+  CalendarPlus,
+  Check,
+  X,
+} from "lucide-react";
 import MessageBubble from "../components/Chat/MessageBubble";
 import { supabase } from "../lib/supabase";
 
@@ -8,13 +15,41 @@ const SUGGESTIONS = [
   "I'm really busy today — what can wait?",
   "What assignments and deadlines are coming up?",
   "What do you remember about my study habits?",
+  "Add a study session to my calendar tomorrow at 5 PM for one hour.",
 ];
+
+const eventTypeLabels = {
+  assignment: "Assignment",
+  exam: "Exam / test",
+  class: "Class",
+  personal: "Personal",
+  study_session: "Study session",
+};
+
+function formatEventDate(value) {
+  if (!value) return "Not specified";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) return "Invalid date";
+
+  return date.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
 
 export default function Chat() {
   const [messages, setMessages] = useState([]);
   const [conversationId, setConversationId] = useState(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [savingEvent, setSavingEvent] = useState(false);
+  const [pendingEvent, setPendingEvent] = useState(null);
   const [error, setError] = useState("");
   const scrollRef = useRef(null);
 
@@ -33,6 +68,7 @@ export default function Chat() {
 
     setConversationId(data.id);
     setMessages([]);
+    setPendingEvent(null);
     setError("");
   };
 
@@ -59,9 +95,10 @@ export default function Chat() {
     scrollRef.current?.scrollIntoView({
       behavior: "smooth",
     });
-  }, [messages, sending]);
+  }, [messages, sending, pendingEvent]);
 
   const newChat = () => {
+    if (sending || savingEvent) return;
     createConversation();
   };
 
@@ -85,19 +122,24 @@ export default function Chat() {
 
     const events = (data || [])
       .filter((event) => {
-        const dateValue = event.start_time || event.due_time;
+        if (
+          String(event.status || "").toLowerCase() === "completed"
+        ) {
+          return false;
+        }
 
-        // Keep undated events too, so the AI can still see them.
+        const dateValue = event.due_time || event.start_time;
+
         if (!dateValue) return true;
 
         const date = new Date(dateValue);
 
-        // Include recent past events for context and future events.
         return !Number.isNaN(date.getTime()) && date >= cutoff;
       })
       .map((event) => ({
         title: event.title || "Untitled event",
         type: event.type || "personal",
+        status: event.status || "pending",
         start_time: event.start_time || null,
         due_time: event.due_time || null,
         end_time: event.end_time || null,
@@ -112,14 +154,29 @@ export default function Chat() {
     };
   };
 
+  const saveMessage = async (role, content) => {
+    if (!conversationId) return;
+
+    const { error } = await supabase
+      .from("messages")
+      .insert({
+        role,
+        content,
+        conversation_id: conversationId,
+      });
+
+    if (error) throw error;
+  };
+
   const send = async (text) => {
     const content = (text ?? input).trim();
 
-    if (!content || sending || !conversationId) return;
+    if (!content || sending || !conversationId || savingEvent) return;
 
     setInput("");
     setSending(true);
     setError("");
+    setPendingEvent(null);
 
     try {
       const { error: userMessageError } = await supabase
@@ -140,8 +197,8 @@ export default function Chat() {
 
       if (historyError) throw historyError;
 
-      // Retrieve the user's actual imported and manually added events.
       const scheduleContext = await getScheduleContext();
+
       console.log("4.0 ACTUAL SCHEDULE DATA:", scheduleContext);
 
       const response = await fetch("/api/chat", {
@@ -161,15 +218,16 @@ export default function Chat() {
         throw new Error(result.error || "AI request failed.");
       }
 
-      const { error: aiMessageError } = await supabase
-        .from("messages")
-        .insert({
-          role: "assistant",
-          content: result.content,
-          conversation_id: conversationId,
-        });
+      await saveMessage(
+        "assistant",
+        result.content || "How can I help?"
+      );
 
-      if (aiMessageError) throw aiMessageError;
+      if (result.proposedEvent) {
+        setPendingEvent(result.proposedEvent);
+      } else {
+        setPendingEvent(null);
+      }
 
       await loadMessages(conversationId);
     } catch (err) {
@@ -178,6 +236,82 @@ export default function Chat() {
       await loadMessages(conversationId);
     } finally {
       setSending(false);
+    }
+  };
+
+  const confirmEvent = async () => {
+    if (!pendingEvent || savingEvent || !conversationId) return;
+
+    setSavingEvent(true);
+    setError("");
+
+    try {
+      const {
+        data: { user },
+        error: authError,
+      } = await supabase.auth.getUser();
+
+      if (authError) throw authError;
+
+      if (!user) {
+        throw new Error("Please sign in before adding an event.");
+      }
+
+      const eventData = {
+        title: pendingEvent.title.trim(),
+        type: pendingEvent.type,
+        status: "pending",
+        importance_score: Number(pendingEvent.importance_score) || 5,
+        source: "ai",
+        user_id: user.id,
+        start_time: pendingEvent.start_time || null,
+        due_time: pendingEvent.due_time || null,
+        end_time: pendingEvent.end_time || null,
+      };
+
+      const { error: insertError } = await supabase
+        .from("events")
+        .insert(eventData);
+
+      if (insertError) throw insertError;
+
+      const savedTitle = eventData.title;
+
+      setPendingEvent(null);
+
+      await saveMessage(
+        "assistant",
+        `Added **${savedTitle}** to your schedule. You can find it on the Schedule page.`
+      );
+
+      await loadMessages(conversationId);
+    } catch (err) {
+      console.error("AI event creation error:", err);
+      setError(
+        err.message ||
+          "I couldn't add that event. Please try again."
+      );
+    } finally {
+      setSavingEvent(false);
+    }
+  };
+
+  const cancelEvent = async () => {
+    if (savingEvent || !pendingEvent) return;
+
+    setPendingEvent(null);
+    setError("");
+
+    try {
+      await saveMessage(
+        "assistant",
+        "No problem — I didn't add anything to your schedule."
+      );
+
+      await loadMessages(conversationId);
+    } catch (err) {
+      console.error("Cancel message error:", err);
+      setError("The event was cancelled, but I couldn't save the chat message.");
     }
   };
 
@@ -195,7 +329,8 @@ export default function Chat() {
 
         <button
           onClick={newChat}
-          className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent"
+          disabled={sending || savingEvent}
+          className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
         >
           + New Chat
         </button>
@@ -204,7 +339,10 @@ export default function Chat() {
       <div className="flex-1 overflow-y-auto px-5 md:px-10">
         <div className="max-w-3xl mx-auto space-y-5">
           {error && (
-            <div className="rounded-xl border p-3 text-sm text-destructive">
+            <div
+              role="alert"
+              className="rounded-xl border p-3 text-sm text-destructive"
+            >
               {error}
             </div>
           )}
@@ -219,6 +357,7 @@ export default function Chat() {
 
               <p className="text-sm text-muted-foreground mt-2">
                 I'll use your saved schedule to help you decide what to do next.
+                I can also add events to your schedule when you ask.
               </p>
 
               <div className="grid sm:grid-cols-2 gap-3 mt-6">
@@ -226,7 +365,8 @@ export default function Chat() {
                   <button
                     key={suggestion}
                     onClick={() => send(suggestion)}
-                    className="rounded-xl border p-3 text-sm text-left hover:bg-accent"
+                    disabled={sending}
+                    className="rounded-xl border p-3 text-sm text-left hover:bg-accent disabled:opacity-50"
                   >
                     {suggestion}
                   </button>
@@ -241,6 +381,81 @@ export default function Chat() {
               message={message}
             />
           ))}
+
+          {pendingEvent && (
+            <div className="rounded-xl border border-primary/30 bg-card p-4 space-y-4">
+              <div className="flex items-center gap-2 font-semibold">
+                <CalendarPlus className="size-5" />
+                Confirm calendar event
+              </div>
+
+              <div>
+                <p className="text-lg font-semibold">
+                  {pendingEvent.title}
+                </p>
+
+                <p className="text-sm text-muted-foreground mt-1">
+                  {eventTypeLabels[pendingEvent.type] || "Event"}
+                </p>
+              </div>
+
+              <div className="space-y-2 text-sm">
+                {pendingEvent.start_time && (
+                  <div>
+                    <span className="text-muted-foreground">Starts: </span>
+                    {formatEventDate(pendingEvent.start_time)}
+                  </div>
+                )}
+
+                {pendingEvent.due_time && (
+                  <div>
+                    <span className="text-muted-foreground">Due: </span>
+                    {formatEventDate(pendingEvent.due_time)}
+                  </div>
+                )}
+
+                {pendingEvent.end_time && (
+                  <div>
+                    <span className="text-muted-foreground">Ends: </span>
+                    {formatEventDate(pendingEvent.end_time)}
+                  </div>
+                )}
+
+                <div>
+                  <span className="text-muted-foreground">Priority: </span>
+                  {pendingEvent.importance_score}/10
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground">
+                This event will only be saved after you confirm.
+              </p>
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={confirmEvent}
+                  disabled={savingEvent}
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                >
+                  {savingEvent ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Check className="size-4" />
+                  )}
+                  {savingEvent ? "Adding..." : "Confirm & Add"}
+                </button>
+
+                <button
+                  onClick={cancelEvent}
+                  disabled={savingEvent}
+                  className="inline-flex items-center gap-2 rounded-lg border px-4 py-2 text-sm disabled:opacity-50"
+                >
+                  <X className="size-4" />
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
 
           {sending && (
             <div className="flex gap-2 text-sm items-center">
@@ -267,11 +482,17 @@ export default function Chat() {
             className="flex-1 rounded-xl border px-4 py-3"
             placeholder="Message 4.0..."
             rows={1}
+            disabled={sending || savingEvent}
           />
 
           <button
             type="submit"
-            disabled={!input.trim() || sending || !conversationId}
+            disabled={
+              !input.trim() ||
+              sending ||
+              savingEvent ||
+              !conversationId
+            }
             className="px-4 rounded-xl border disabled:opacity-50"
           >
             Send
