@@ -49,99 +49,84 @@ ${scheduleText}
 
 YOUR RESPONSIBILITIES
 
-1. Help the student make realistic decisions using their actual schedule.
-2. Recommend specific assignments and commitments using due dates, event types, and importance.
-3. Never invent assignments, grades, deadlines, or events.
-4. Never recommend completed work as unfinished.
-5. Completed events are excluded from the schedule data.
-6. Distinguish due dates from event start and end times.
-7. Never schedule an event in the past.
-8. Ask one concise question when essential information is missing.
+- Help the student make realistic decisions using their actual schedule.
+- Never invent assignments, grades, deadlines, or events.
+- Never recommend completed work as unfinished.
+- Distinguish due dates from actual time blocks.
+- Never schedule an event in the past.
+- Ask one concise question when essential information is missing.
 
 CALENDAR ACTIONS
 
-You can propose three kinds of calendar actions:
-
-- create: Add a new event.
-- move: Change the time of an existing event.
+You can propose:
+- create: Add an event.
+- move: Change an existing event's date or time.
 - delete: Remove an existing event.
 
-Whenever the student clearly asks you to create, move, or delete an event, use the propose_calendar_change tool.
+When the student clearly requests a calendar change, call propose_calendar_change.
 
-Never claim an event has been saved, moved, or deleted before the student confirms it.
+A proposal is NOT a completed action. Never say something has been saved, moved, or deleted until the student confirms it.
 
-For a new event:
-- Include a useful title.
-- Select one of these types: assignment, exam, class, personal, study_session.
+CREATE:
+- Use a useful title.
+- Choose assignment, exam, class, personal, or study_session.
 - Estimate importance_score from 1 to 10.
-- Include any known start_time, due_time, and end_time.
-- Use ISO 8601 timestamps with time-zone offsets.
-- Do not invent a time if the student has not provided one.
-- Ask for missing essential scheduling information instead of guessing.
+- Include known start_time, due_time, and end_time.
+- Do not invent unspecified times.
+- Ask for missing essential information.
 
-For a move:
-- Identify the exact existing event using its event ID.
-- Only select IDs present in the active schedule.
-- Preserve existing dates and fields that the student did not ask to change.
-- Provide the new time information.
+MOVE:
+- Use the exact event ID from the active schedule.
+- Preserve fields the student did not ask to change.
+- Only propose a new time when the student has supplied enough information.
 
-For a delete:
-- Identify the exact event using its event ID.
-- Explain why removal was requested.
+DELETE:
+- Use the exact event ID from the active schedule.
 - Never delete a completed event.
+- Explain why removal was requested.
 
 AUTOMATIC PRIORITY
 
-Estimate importance_score on a scale from 1 to 10:
-- 9–10: Extremely important, such as major exams or urgent high-value deadlines.
+Estimate importance_score from 1 to 10:
+- 9–10: Extremely important exams or urgent high-value deadlines.
 - 7–8: Important assignments, exams, and major commitments.
 - 4–6: Normal assignments and useful study sessions.
 - 1–3: Optional or low-urgency activities.
 
-Consider:
-- Event type.
-- Due date and how close it is.
-- Explicit importance expressed by the student.
-- Whether the event is mandatory or optional.
-- Existing priority information.
+Consider event type, deadline proximity, explicit importance, whether it is mandatory or optional, and existing priority information.
 
 Do not assume every exam is more important than every personal commitment.
-If importance is uncertain, use 5 and explain that it is an estimate.
+If uncertain, use 5 and explain that it is an estimate.
+Do not change an existing event's priority merely because it is being moved.
 
 CALENDAR CONFLICTS
 
-A conflict exists when two scheduled time blocks overlap.
+A conflict exists only when two scheduled time blocks overlap.
 
-Only consider events with both a valid start_time and end_time.
+Only consider events with both start_time and end_time.
 A due date by itself is not a time-block conflict.
 
-For every overlapping active event:
+For every overlapping event:
 - Identify its exact event ID.
-- Compare its importance with the proposed event.
-- Consider whether it is mandatory, flexible, or optional.
-- Recommend a reasonable resolution.
+- Compare the importance and flexibility of both commitments.
+- Prefer moving a flexible event over deleting it.
+- Never recommend deleting a mandatory commitment merely because another event has a higher score.
+- If both commitments are important or the answer is unclear, use ask_user.
 
 Allowed conflict decisions:
-- move_existing: Recommend moving the existing event. Supply a new start_time and end_time.
-- delete_existing: Recommend deleting the existing event only when appropriate.
-- ask_user: Importance is unclear, or both commitments may be necessary.
+- move_existing: Recommend moving the existing event. Supply new_start_time and new_end_time.
+- delete_existing: Recommend deleting the existing event only when clearly appropriate.
+- ask_user: The student needs to decide.
 
-Never silently remove or move an event.
-Every conflict resolution must be confirmed by the student.
-Prefer moving a flexible event over deleting it.
-Never recommend removing a mandatory commitment merely because another event has a higher numerical priority.
-If two important commitments conflict, use ask_user.
+Never silently move or delete anything.
+Every proposed change must be confirmed by the student.
 
 TOOL USAGE
 
-Call propose_calendar_change only when the student clearly requests a calendar change.
-Do not use it for ordinary planning questions or hypothetical examples.
-
-If the student asks to move or delete something but you cannot identify the exact event, ask which event they mean instead of guessing.
-
-When proposing a change, provide a short explanation in the reason field.
-
-When no calendar action is requested, answer normally using the student's schedule.
+Use propose_calendar_change only when a calendar change is clearly requested.
+Do not use it for ordinary planning or hypothetical examples.
+If the exact event cannot be identified, ask which event the student means.
+Do not propose a change if essential information is missing.
 
 WRITING STYLE
 
@@ -159,7 +144,7 @@ WRITING STYLE
         function: {
           name: "propose_calendar_change",
           description:
-            "Propose a calendar creation, move, or deletion. This does not save anything. The student must confirm.",
+            "Prepare a calendar change for the student to review. This tool never saves anything.",
           parameters: {
             type: "object",
             additionalProperties: false,
@@ -268,7 +253,7 @@ WRITING STYLE
           tool_choice: "auto",
           parallel_tool_calls: false,
           temperature: 0.3,
-          max_tokens: 1600,
+          max_tokens: 1800,
         }),
       }
     );
@@ -347,10 +332,16 @@ WRITING STYLE
       const date = new Date(value);
 
       if (Number.isNaN(date.getTime())) return null;
-      if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(value)) return null;
+
+      if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(value)) {
+        return null;
+      }
 
       return date.toISOString();
     };
+
+    const isFuture = (value) =>
+      !value || new Date(value).getTime() > Date.now();
 
     if (!["create", "move", "delete"].includes(proposal.action)) {
       return res.status(400).json({
@@ -358,7 +349,31 @@ WRITING STYLE
       });
     }
 
-    if (proposal.action === "create") {
+    const existingPrimary =
+      proposal.action === "create"
+        ? null
+        : findEvent(proposal.event_id);
+
+    if (proposal.action !== "create") {
+      if (!existingPrimary) {
+        return res.status(400).json({
+          error:
+            "The selected event is not in your active schedule. Please try again.",
+        });
+      }
+
+      if (
+        String(existingPrimary.status || "").toLowerCase() === "completed"
+      ) {
+        return res.status(400).json({
+          error: "Completed events cannot be changed.",
+        });
+      }
+
+      proposal.title = existingPrimary.title;
+      proposal.type = existingPrimary.type;
+      proposal.importance_score = existingPrimary.importance_score;
+    } else {
       if (!String(proposal.title || "").trim()) {
         return res.status(400).json({
           error: "The proposed event needs a title.",
@@ -370,127 +385,214 @@ WRITING STYLE
           error: "The proposed event has an invalid type.",
         });
       }
-    } else {
-      const existing = findEvent(proposal.event_id);
-
-      if (!existing) {
-        return res.status(400).json({
-          error: "The AI selected an event that is not in your active schedule. Please try again.",
-        });
-      }
-
-      if (
-        String(existing.status || "").toLowerCase() === "completed"
-      ) {
-        return res.status(400).json({
-          error: "Completed events cannot be changed by this proposal.",
-        });
-      }
-
-      proposal.title = existing.title;
-      proposal.type = existing.type;
-      proposal.importance_score = existing.importance_score;
     }
 
-    proposal.importance_score = Math.max(
-      1,
-      Math.min(10, Math.round(Number(proposal.importance_score) || 5))
-    );
+    const startTime = validDate(proposal.start_time);
+    const dueTime = validDate(proposal.due_time);
+    const endTime = validDate(proposal.end_time);
 
-    proposal.start_time = validDate(proposal.start_time);
-    proposal.due_time = validDate(proposal.due_time);
-    proposal.end_time = validDate(proposal.end_time);
+    if (
+      (proposal.start_time && !startTime) ||
+      (proposal.due_time && !dueTime) ||
+      (proposal.end_time && !endTime)
+    ) {
+      return res.status(400).json({
+        error: "The proposal contains an invalid date or time.",
+      });
+    }
 
     if (proposal.action !== "delete") {
       if (
         proposal.action === "move" &&
-        !proposal.start_time &&
-        !proposal.end_time &&
-        !proposal.due_time
+        !startTime &&
+        !endTime &&
+        !dueTime
       ) {
         return res.status(400).json({
           error: "The move proposal does not include a new date or time.",
         });
       }
 
+      const resultingStart =
+        startTime || existingPrimary?.start_time || null;
+      const resultingEnd =
+        endTime || existingPrimary?.end_time || null;
+
       if (
-        proposal.start_time &&
-        proposal.end_time &&
-        new Date(proposal.end_time) <= new Date(proposal.start_time)
+        resultingStart &&
+        resultingEnd &&
+        new Date(resultingEnd) <= new Date(resultingStart)
       ) {
         return res.status(400).json({
           error: "The proposed end time must be after its start time.",
         });
       }
+
+      if (
+        (startTime && !isFuture(startTime)) ||
+        (endTime && !isFuture(endTime))
+      ) {
+        return res.status(400).json({
+          error: "The proposed time must be in the future.",
+        });
+      }
     }
+
+    const score = Math.max(
+      1,
+      Math.min(
+        10,
+        Math.round(Number(proposal.importance_score) || 5)
+      )
+    );
+
+    const resultingStart =
+      proposal.action === "create"
+        ? startTime
+        : startTime || existingPrimary?.start_time || null;
+
+    const resultingEnd =
+      proposal.action === "create"
+        ? endTime
+        : endTime || existingPrimary?.end_time || null;
+
+    const overlaps = (aStart, aEnd, bStart, bEnd) => {
+      const a = new Date(aStart).getTime();
+      const b = new Date(aEnd).getTime();
+      const c = new Date(bStart).getTime();
+      const d = new Date(bEnd).getTime();
+
+      if ([a, b, c, d].some(Number.isNaN)) return false;
+
+      return a < d && b > c;
+    };
 
     const validatedConflicts = [];
+    const seenConflictIds = new Set();
 
-    for (const conflict of Array.isArray(proposal.conflicts)
-      ? proposal.conflicts
-      : []) {
-      const existing = findEvent(conflict.event_id);
+    if (proposal.action !== "delete" && resultingStart && resultingEnd) {
+      for (const conflict of Array.isArray(proposal.conflicts)
+        ? proposal.conflicts
+        : []) {
+        const existing = findEvent(conflict.event_id);
 
-      if (!existing || existing.id === proposal.event_id) continue;
+        if (!existing) continue;
 
-      if (
-        String(existing.status || "").toLowerCase() === "completed"
-      ) {
-        continue;
-      }
+        const id = String(existing.id);
 
-      const decision = [
-        "move_existing",
-        "delete_existing",
-        "ask_user",
-      ].includes(conflict.decision)
-        ? conflict.decision
-        : "ask_user";
+        if (
+          id === String(proposal.event_id || "") ||
+          seenConflictIds.has(id) ||
+          String(existing.status || "").toLowerCase() === "completed"
+        ) {
+          continue;
+        }
 
-      const newStart = validDate(conflict.new_start_time);
-      const newEnd = validDate(conflict.new_end_time);
+        seenConflictIds.add(id);
 
-      if (
-        decision === "move_existing" &&
-        (!newStart || !newEnd || new Date(newEnd) <= new Date(newStart))
-      ) {
+        if (
+          !existing.start_time ||
+          !existing.end_time ||
+          !overlaps(
+            resultingStart,
+            resultingEnd,
+            existing.start_time,
+            existing.end_time
+          )
+        ) {
+          continue;
+        }
+
+        const decision = [
+          "move_existing",
+          "delete_existing",
+          "ask_user",
+        ].includes(conflict.decision)
+          ? conflict.decision
+          : "ask_user";
+
+        const newStart = validDate(conflict.new_start_time);
+        const newEnd = validDate(conflict.new_end_time);
+
+        if (
+          decision === "move_existing" &&
+          (
+            !newStart ||
+            !newEnd ||
+            new Date(newEnd) <= new Date(newStart) ||
+            overlaps(resultingStart, resultingEnd, newStart, newEnd)
+          )
+        ) {
+          validatedConflicts.push({
+            event_id: id,
+            title: existing.title || "Untitled event",
+            decision: "ask_user",
+            new_start_time: null,
+            new_end_time: null,
+            reason:
+              "A safe alternative time was not provided. Please choose a time.",
+          });
+          continue;
+        }
+
         validatedConflicts.push({
-          event_id: String(existing.id),
-          title: existing.title,
-          decision: "ask_user",
-          new_start_time: null,
-          new_end_time: null,
-          reason: "A valid alternative time was not provided.",
+          event_id: id,
+          title: existing.title || "Untitled event",
+          decision,
+          new_start_time: decision === "move_existing" ? newStart : null,
+          new_end_time: decision === "move_existing" ? newEnd : null,
+          reason: String(conflict.reason || "This event overlaps."),
         });
-        continue;
       }
-
-      validatedConflicts.push({
-        event_id: String(existing.id),
-        title: existing.title,
-        decision,
-        new_start_time: newStart,
-        new_end_time: newEnd,
-        reason: String(conflict.reason || "Calendar conflict."),
-      });
     }
 
-    const existingPrimary =
-      proposal.action === "create"
-        ? null
-        : findEvent(proposal.event_id);
+    // Independently detect any overlap the AI did not include.
+    if (proposal.action !== "delete" && resultingStart && resultingEnd) {
+      for (const event of events) {
+        const id = String(event.id);
+
+        if (
+          id === String(proposal.event_id || "") ||
+          seenConflictIds.has(id) ||
+          !event.start_time ||
+          !event.end_time
+        ) {
+          continue;
+        }
+
+        if (
+          overlaps(
+            resultingStart,
+            resultingEnd,
+            event.start_time,
+            event.end_time
+          )
+        ) {
+          validatedConflicts.push({
+            event_id: id,
+            title: event.title || "Untitled event",
+            decision: "ask_user",
+            new_start_time: null,
+            new_end_time: null,
+            reason:
+              "This event overlaps with the proposed time but was not included in the AI's conflict analysis.",
+          });
+        }
+      }
+    }
 
     const proposedAction = {
       action: proposal.action,
-      event_id: proposal.action === "create" ? null : String(proposal.event_id),
+      event_id:
+        proposal.action === "create" ? null : String(proposal.event_id),
       title: String(proposal.title || "").trim(),
       type: allowedTypes.includes(proposal.type)
         ? proposal.type
         : "personal",
-      importance_score: proposal.importance_score,
-      start_time: proposal.start_time,
-      due_time: proposal.due_time,
-      end_time: proposal.end_time,
+      importance_score: score,
+      start_time: startTime,
+      due_time: dueTime,
+      end_time: endTime,
       reason: String(proposal.reason || "Requested calendar change."),
       conflicts: validatedConflicts,
       existing_event: existingPrimary

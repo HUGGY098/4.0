@@ -116,6 +116,8 @@ export default function Chat() {
 
   const createConversation = async () => {
     setPendingAction(null);
+    setConversationId(null);
+    setMessages([]);
 
     const { data, error } = await supabase
       .from("conversations")
@@ -130,11 +132,12 @@ export default function Chat() {
     }
 
     setConversationId(data.id);
-    setMessages([]);
     setError("");
   };
 
   const loadMessages = async (id) => {
+    if (!id) return;
+
     const { data, error } = await supabase
       .from("messages")
       .select("*")
@@ -160,7 +163,9 @@ export default function Chat() {
   }, [messages, sending, pendingAction]);
 
   const newChat = () => {
-    createConversation();
+    if (!sending && !confirming) {
+      createConversation();
+    }
   };
 
   const getScheduleContext = async () => {
@@ -215,7 +220,9 @@ export default function Chat() {
 
     return {
       current_time: now.toISOString(),
-      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      timezone:
+        Intl.DateTimeFormat().resolvedOptions().timeZone ||
+        "America/Chicago",
       events,
     };
   };
@@ -233,7 +240,7 @@ export default function Chat() {
   const send = async (text) => {
     const content = (text ?? input).trim();
 
-    if (!content || sending || !conversationId) return;
+    if (!content || sending || confirming || !conversationId) return;
 
     setInput("");
     setSending(true);
@@ -305,6 +312,8 @@ export default function Chat() {
   };
 
   const cancelAction = async () => {
+    if (confirming) return;
+
     setPendingAction(null);
 
     try {
@@ -314,7 +323,9 @@ export default function Chat() {
       await loadMessages(conversationId);
     } catch (err) {
       console.error("Cancellation message error:", err);
-      setError("The proposal was cancelled, but I couldn't save the chat message.");
+      setError(
+        "The proposal was cancelled, but I couldn't save the chat message."
+      );
     }
   };
 
@@ -329,7 +340,7 @@ export default function Chat() {
       )
     ) {
       setError(
-        "There is a calendar conflict that needs your decision. Cancel this proposal or ask 4.0 to help resolve the conflict first."
+        "There is a calendar conflict that needs your decision. Ask 4.0 to help resolve it before confirming."
       );
       return;
     }
@@ -344,28 +355,31 @@ export default function Chat() {
       } = await supabase.auth.getUser();
 
       if (userError) throw userError;
-      if (!user) throw new Error("Please sign in before changing your schedule.");
 
-      // Confirm that every affected event still exists and is active.
+      if (!user) {
+        throw new Error("Please sign in before changing your schedule.");
+      }
+
+      // Verify that every affected event still exists and belongs to this user.
       const affectedIds = [
         ...(proposal.action === "create" ? [] : [proposal.event_id]),
         ...(proposal.conflicts || []).map((item) => item.event_id),
       ].filter(Boolean);
 
-      let currentEvents = [];
+      const uniqueIds = [...new Set(affectedIds)];
 
-      if (affectedIds.length) {
-        const { data, error } = await supabase
+      if (uniqueIds.length > 0) {
+        const { data, error: checkError } = await supabase
           .from("events")
-          .select("*")
-          .in("id", affectedIds)
+          .select("id, status")
+          .in("id", uniqueIds)
           .eq("user_id", user.id);
 
-        if (error) throw error;
+        if (checkError) throw checkError;
 
-        currentEvents = data || [];
+        const currentEvents = data || [];
 
-        if (currentEvents.length !== affectedIds.length) {
+        if (currentEvents.length !== uniqueIds.length) {
           throw new Error(
             "One or more events have changed or are no longer available. Refresh your schedule and try again."
           );
@@ -383,103 +397,18 @@ export default function Chat() {
         }
       }
 
-      // Apply the primary event action.
-      if (proposal.action === "create") {
-        const { error } = await supabase.from("events").insert({
-          title: proposal.title,
-          type: proposal.type || "personal",
-          status: "pending",
-          importance_score: proposal.importance_score || 5,
-          source: "ai",
-          user_id: user.id,
-          start_time: proposal.start_time,
-          due_time: proposal.due_time,
-          end_time: proposal.end_time,
-        });
-
-        if (error) throw error;
-      }
-
-      if (proposal.action === "move") {
-        const updates = {
-          importance_score: proposal.importance_score || 5,
-        };
-
-        if (proposal.start_time) {
-          updates.start_time = proposal.start_time;
+      // All approved changes are applied in one database transaction.
+      const { data, error: rpcError } = await supabase.rpc(
+        "apply_calendar_action",
+        {
+          p_action: proposal,
         }
+      );
 
-        if (proposal.due_time) {
-          updates.due_time = proposal.due_time;
-        }
+      if (rpcError) throw rpcError;
 
-        if (proposal.end_time) {
-          updates.end_time = proposal.end_time;
-        }
-
-        const { data, error } = await supabase
-          .from("events")
-          .update(updates)
-          .eq("id", proposal.event_id)
-          .eq("user_id", user.id)
-          .select("id")
-          .single();
-
-        if (error) throw error;
-        if (!data) throw new Error("The event could not be moved.");
-      }
-
-      if (proposal.action === "delete") {
-        const { data, error } = await supabase
-          .from("events")
-          .delete()
-          .eq("id", proposal.event_id)
-          .eq("user_id", user.id)
-          .select("id")
-          .single();
-
-        if (error) throw error;
-        if (!data) throw new Error("The event could not be deleted.");
-      }
-
-      // Apply the separately confirmed conflict recommendations.
-      for (const conflict of proposal.conflicts || []) {
-        if (conflict.decision === "move_existing") {
-          const { data, error } = await supabase
-            .from("events")
-            .update({
-              start_time: conflict.new_start_time,
-              end_time: conflict.new_end_time,
-            })
-            .eq("id", conflict.event_id)
-            .eq("user_id", user.id)
-            .select("id")
-            .single();
-
-          if (error) throw error;
-          if (!data) {
-            throw new Error(
-              `Couldn't move the conflicting event: ${conflict.title}.`
-            );
-          }
-        }
-
-        if (conflict.decision === "delete_existing") {
-          const { data, error } = await supabase
-            .from("events")
-            .delete()
-            .eq("id", conflict.event_id)
-            .eq("user_id", user.id)
-            .select("id")
-            .single();
-
-          if (error) throw error;
-          if (!data) {
-            throw new Error(
-              `Couldn't delete the conflicting event: ${conflict.title}.`
-            );
-          }
-        }
+      if (!data?.success) {
+        throw new Error("The calendar change was not completed.");
       }
 
       const actionText =
@@ -490,7 +419,6 @@ export default function Chat() {
             : `Deleted "${proposal.title}" from your schedule.`;
 
       const conflictText = (proposal.conflicts || [])
-        .filter((item) => item.decision !== "ask_user")
         .map((item) =>
           item.decision === "move_existing"
             ? `Moved "${item.title}" to resolve the conflict.`
@@ -508,6 +436,7 @@ export default function Chat() {
       await loadMessages(conversationId);
     } catch (err) {
       console.error("Calendar action error:", err);
+
       setError(
         err.message ||
           "The calendar change could not be completed. Please refresh and check your schedule."
@@ -517,14 +446,12 @@ export default function Chat() {
     }
   };
 
-  const actionIcon =
+  const ActionIcon =
     pendingAction?.action === "create"
       ? CalendarPlus
       : pendingAction?.action === "move"
         ? CalendarClock
         : Trash2;
-
-  const ActionIcon = actionIcon;
 
   return (
     <div className="flex h-screen max-h-screen flex-col">
@@ -540,7 +467,8 @@ export default function Chat() {
 
         <button
           onClick={newChat}
-          className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent"
+          disabled={sending || confirming}
+          className="mt-4 rounded-xl border px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
         >
           + New Chat
         </button>
@@ -574,7 +502,8 @@ export default function Chat() {
                   <button
                     key={suggestion}
                     onClick={() => send(suggestion)}
-                    className="rounded-xl border p-3 text-left text-sm hover:bg-accent"
+                    disabled={sending || confirming}
+                    className="rounded-xl border p-3 text-left text-sm hover:bg-accent disabled:opacity-50"
                   >
                     {suggestion}
                   </button>
@@ -610,31 +539,50 @@ export default function Chat() {
                       : "Delete event"}
                 </div>
 
-                <div className="text-sm">
-                  **{pendingAction.title}**
+                <div className="text-sm font-semibold">
+                  {pendingAction.title}
                 </div>
+
+                {pendingAction.action === "move" &&
+                  pendingAction.existing_event && (
+                    <div className="rounded-lg border p-2 text-sm">
+                      <div className="font-medium">Current schedule</div>
+                      <div className="text-muted-foreground">
+                        Starts: {formatDate(pendingAction.existing_event.start_time)}
+                      </div>
+                      <div className="text-muted-foreground">
+                        Due: {formatDate(pendingAction.existing_event.due_time)}
+                      </div>
+                      <div className="text-muted-foreground">
+                        Ends: {formatDate(pendingAction.existing_event.end_time)}
+                      </div>
+                    </div>
+                  )}
 
                 {pendingAction.action !== "delete" && (
                   <div className="space-y-1 text-sm text-muted-foreground">
                     <div>
                       Type: {(pendingAction.type || "personal").replace("_", " ")}
                     </div>
-                    {pendingAction.start_time && (
-                      <div>
-                        Starts: {formatDate(pendingAction.start_time)}
-                      </div>
-                    )}
-                    {pendingAction.due_time && (
-                      <div>
-                        Due: {formatDate(pendingAction.due_time)}
-                      </div>
-                    )}
-                    {pendingAction.end_time && (
-                      <div>
-                        Ends: {formatDate(pendingAction.end_time)}
-                      </div>
-                    )}
                     <div>
+                      Starts: {formatDate(
+                        pendingAction.start_time ||
+                          pendingAction.existing_event?.start_time
+                      )}
+                    </div>
+                    <div>
+                      Due: {formatDate(
+                        pendingAction.due_time ||
+                          pendingAction.existing_event?.due_time
+                      )}
+                    </div>
+                    <div>
+                      Ends: {formatDate(
+                        pendingAction.end_time ||
+                          pendingAction.existing_event?.end_time
+                      )}
+                    </div>
+                    <div className="font-medium text-foreground">
                       Estimated priority: {pendingAction.importance_score}/10
                     </div>
                   </div>
@@ -647,7 +595,8 @@ export default function Chat() {
                 )}
 
                 <div className="border-t pt-2 text-sm">
-                  **Why:** {pendingAction.reason}
+                  <span className="font-semibold">Why:</span>{" "}
+                  {pendingAction.reason}
                 </div>
               </div>
 
@@ -674,7 +623,7 @@ export default function Chat() {
                           ? "Recommendation: Move this event"
                           : conflict.decision === "delete_existing"
                             ? "Recommendation: Delete this event"
-                            : "Decision needed: These commitments need your review"}
+                            : "Decision needed: Review these commitments"}
                       </div>
 
                       {conflict.decision === "move_existing" && (
@@ -694,7 +643,7 @@ export default function Chat() {
               ) && (
                 <p className="mt-3 text-sm text-amber-700">
                   4.0 needs your input before this conflict can be resolved.
-                  Ask it to help compare the commitments, or cancel this proposal.
+                  Ask it to compare the commitments, or cancel this proposal.
                 </p>
               )}
 
@@ -754,11 +703,12 @@ export default function Chat() {
             className="flex-1 rounded-xl border px-4 py-3"
             placeholder="Message 4.0..."
             rows={1}
+            disabled={sending || confirming}
           />
 
           <button
             type="submit"
-            disabled={!input.trim() || sending || !conversationId}
+            disabled={!input.trim() || sending || confirming || !conversationId}
             className="rounded-xl border px-4 disabled:opacity-50"
           >
             Send
