@@ -456,6 +456,22 @@ WRITING STYLE
         ? endTime
         : endTime || existingPrimary?.end_time || null;
 
+    // Classes and study sessions must always occupy a complete time block.
+    const resultingType =
+      proposal.action === "create"
+        ? proposal.type
+        : existingPrimary?.type;
+
+    if (
+      proposal.action !== "delete" &&
+      ["class", "study_session"].includes(resultingType) &&
+      (!resultingStart || !resultingEnd)
+    ) {
+      return res.status(400).json({
+        error: "Classes and study sessions require both a start and end time.",
+      });
+    }
+
     const overlaps = (aStart, aEnd, bStart, bEnd) => {
       const a = new Date(aStart).getTime();
       const b = new Date(aEnd).getTime();
@@ -514,13 +530,42 @@ WRITING STYLE
         const newStart = validDate(conflict.new_start_time);
         const newEnd = validDate(conflict.new_end_time);
 
+        const overlapsAnotherEvent =
+          decision === "move_existing" &&
+          newStart &&
+          newEnd &&
+          events.some((other) => {
+            const otherId = String(other.id);
+            return (
+              otherId !== id &&
+              otherId !== String(proposal.event_id || "") &&
+              String(other.status || "").toLowerCase() !== "completed" &&
+              other.start_time &&
+              other.end_time &&
+              overlaps(newStart, newEnd, other.start_time, other.end_time)
+            );
+          });
+
+        const overlapsAnotherProposedMove =
+          decision === "move_existing" &&
+          newStart &&
+          newEnd &&
+          validatedConflicts.some((prior) =>
+            prior.decision === "move_existing" &&
+            prior.new_start_time &&
+            prior.new_end_time &&
+            overlaps(newStart, newEnd, prior.new_start_time, prior.new_end_time)
+          );
+
         if (
           decision === "move_existing" &&
           (
             !newStart ||
             !newEnd ||
             new Date(newEnd) <= new Date(newStart) ||
-            overlaps(resultingStart, resultingEnd, newStart, newEnd)
+            overlaps(resultingStart, resultingEnd, newStart, newEnd) ||
+            overlapsAnotherEvent ||
+            overlapsAnotherProposedMove
           )
         ) {
           validatedConflicts.push({
