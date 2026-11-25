@@ -12,6 +12,9 @@ import {
   Apple,
   GraduationCap,
   Trash2,
+  Circle,
+  CircleCheck,
+  Loader2,
 } from "lucide-react";
 
 import AddEventDialog from "../components/Schedule/AddEventDialog";
@@ -25,6 +28,10 @@ const typeColors = {
   personal: "bg-violet-500/10 text-violet-600 border-violet-500/20",
   study_session: "bg-emerald-500/10 text-emerald-600 border-emerald-500/20",
 };
+
+function isCompleted(event) {
+  return String(event.status || "").toLowerCase() === "completed";
+}
 
 function getEventDate(event) {
   const value = event.due_time || event.start_time || event.end_time;
@@ -70,6 +77,7 @@ export default function Schedule() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [syncOpen, setSyncOpen] = useState(false);
   const [pageError, setPageError] = useState("");
+  const [updatingIds, setUpdatingIds] = useState([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -97,6 +105,44 @@ export default function Schedule() {
     load();
   }, [load]);
 
+  const toggleCompletion = async (event) => {
+    if (updatingIds.includes(event.id)) return;
+
+    const wasCompleted = isCompleted(event);
+    const newStatus = wasCompleted ? "pending" : "completed";
+
+    setUpdatingIds((current) => [...current, event.id]);
+    setPageError("");
+
+    try {
+      const { data, error } = await supabase
+        .from("events")
+        .update({ status: newStatus })
+        .eq("id", event.id)
+        .select("id, status")
+        .single();
+
+      if (error) throw error;
+
+      setEvents((current) =>
+        current.map((item) =>
+          item.id === event.id
+            ? { ...item, status: data.status }
+            : item
+        )
+      );
+    } catch (error) {
+      console.error("Failed updating completion:", error);
+      setPageError(
+        error?.message || "Couldn't update the assignment's completion status."
+      );
+    } finally {
+      setUpdatingIds((current) =>
+        current.filter((id) => id !== event.id)
+      );
+    }
+  };
+
   const grouped = useMemo(() => {
     const now = new Date();
 
@@ -111,10 +157,13 @@ export default function Schedule() {
       return dateA - dateB;
     });
 
+    const completed = sorted.filter(isCompleted);
+    const active = sorted.filter((event) => !isCompleted(event));
+
     if (grouping === "priority") {
       const result = { High: [], Medium: [], Low: [] };
 
-      sorted.forEach((event) => {
+      active.forEach((event) => {
         const score = Number(event.importance_score) || 0;
 
         if (score >= 8) result.High.push(event);
@@ -142,14 +191,22 @@ export default function Schedule() {
         });
       });
 
-      return result;
+      if (completed.length) {
+        result.Completed = completed.sort(
+          (a, b) => (getEventDate(b) || 0) - (getEventDate(a) || 0)
+        );
+      }
+
+      return Object.fromEntries(
+        Object.entries(result).filter(([, items]) => items.length)
+      );
     }
 
     const past = [];
     const upcoming = [];
     const undated = [];
 
-    sorted.forEach((event) => {
+    active.forEach((event) => {
       const date = getEventDate(event);
 
       if (!date) {
@@ -176,6 +233,12 @@ export default function Schedule() {
     });
 
     if (undated.length) result["No date set"] = undated;
+
+    if (completed.length) {
+      result["Completed"] = completed.sort(
+        (a, b) => (getEventDate(b) || 0) - (getEventDate(a) || 0)
+      );
+    }
 
     return result;
   }, [events, grouping]);
@@ -277,7 +340,10 @@ export default function Schedule() {
       </div>
 
       {pageError && (
-        <p role="alert" className="mb-4 rounded-md border border-red-500/30 p-3 text-sm text-red-600">
+        <p
+          role="alert"
+          className="mb-4 rounded-md border border-red-500/30 p-3 text-sm text-red-600"
+        >
           {pageError}
         </p>
       )}
@@ -289,36 +355,92 @@ export default function Schedule() {
           <ListChecks className="mx-auto mb-3" />
           No events yet.
         </div>
+      ) : Object.keys(grouped).length === 0 ? (
+        <div className="rounded-xl border border-dashed p-10 text-center">
+          <CircleCheck className="mx-auto mb-3 text-emerald-500" />
+          All caught up! Everything is completed.
+        </div>
       ) : (
         Object.entries(grouped).map(([title, items]) => (
           <div key={title} className="mb-6">
-            <h2 className="mb-3 text-sm font-semibold">{title}</h2>
+            <h2 className="mb-3 text-sm font-semibold">
+              {title}
+              {title === "Completed" && (
+                <span className="ml-2 font-normal text-muted-foreground">
+                  ({items.length})
+                </span>
+              )}
+            </h2>
 
             <div className="space-y-2">
               {items.map((event) => {
                 const start = formatDateTime(event.start_time);
                 const due = formatDateTime(event.due_time);
                 const end = formatDateTime(event.end_time);
+                const completed = isCompleted(event);
+                const updating = updatingIds.includes(event.id);
 
                 return (
                   <div
                     key={event.id}
-                    className="flex flex-wrap justify-between gap-4 rounded-xl border border-border bg-card p-4"
+                    className={`flex flex-wrap justify-between gap-4 rounded-xl border border-border bg-card p-4 ${
+                      completed ? "opacity-75" : ""
+                    }`}
                   >
-                    <div className="min-w-0">
-                      <div className="font-medium">{event.title}</div>
+                    <div className="flex min-w-0 flex-1 items-start gap-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleCompletion(event)}
+                        disabled={updating}
+                        aria-label={
+                          completed
+                            ? `Mark ${event.title} as incomplete`
+                            : `Mark ${event.title} as completed`
+                        }
+                        title={
+                          completed
+                            ? "Mark as incomplete"
+                            : "Mark as completed"
+                        }
+                        className="mt-0.5 shrink-0 rounded-full text-muted-foreground transition-colors hover:text-emerald-600 disabled:cursor-wait"
+                      >
+                        {updating ? (
+                          <Loader2 className="size-5 animate-spin" />
+                        ) : completed ? (
+                          <CircleCheck className="size-5 text-emerald-500" />
+                        ) : (
+                          <Circle className="size-5" />
+                        )}
+                      </button>
 
-                      <div className="mt-1 text-xs capitalize text-muted-foreground">
-                        {(event.type || "personal").replace("_", " ")}
-                      </div>
-
-                      {(start || due || end) && (
-                        <div className="mt-2 space-y-1 text-xs text-muted-foreground">
-                          {start && <div>Starts: {start}</div>}
-                          {due && <div>Due: {due}</div>}
-                          {end && <div>Ends: {end}</div>}
+                      <div className="min-w-0">
+                        <div
+                          className={`font-medium ${
+                            completed
+                              ? "text-muted-foreground line-through"
+                              : ""
+                          }`}
+                        >
+                          {event.title}
                         </div>
-                      )}
+
+                        <div className="mt-1 text-xs capitalize text-muted-foreground">
+                          {(event.type || "personal").replace("_", " ")}
+                          {completed && (
+                            <span className="ml-2 font-medium text-emerald-600">
+                              Completed
+                            </span>
+                          )}
+                        </div>
+
+                        {(start || due || end) && (
+                          <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                            {start && <div>Starts: {start}</div>}
+                            {due && <div>Due: {due}</div>}
+                            {end && <div>Ends: {end}</div>}
+                          </div>
+                        )}
+                      </div>
                     </div>
 
                     <div className="flex items-center gap-2">
